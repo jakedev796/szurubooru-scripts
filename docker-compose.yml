@@ -1,0 +1,69 @@
+
+
+services:
+  szurubooru-manager:
+    build: .
+    container_name: szurubooru-manager
+    restart: unless-stopped
+    
+    # GPU support (uncomment if you have NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    
+    # Volume mounts
+    volumes:
+      # Mount your upload directory
+      - /mnt/user/data/syncthing/boker:/app/uploads:ro
+      # Mount logs directory for persistence
+      - ./logs:/app/logs
+      # Mount config file for easy updates
+      - ./config.json:/app/config.json:ro
+      # Optional: mount processed files tracking
+      - ./processed_files.json:/app/processed_files.json
+    
+    # Environment variables (can override config.yaml)
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+      # Override config values if needed
+      # - SZURUBOORU_URL=http://your-szurubooru-instance:8080
+      # - USERNAME=your-username
+      # - API_TOKEN=your-api-token
+    
+    # Network settings
+    networks:
+      - szurubooru-network
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: '8.0'
+        reservations:
+          memory: 4G
+          cpus: '0.5'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/app/szurubooru_manager.py') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  szurubooru-network:
+    driver: bridge

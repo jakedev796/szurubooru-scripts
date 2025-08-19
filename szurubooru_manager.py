@@ -272,6 +272,48 @@ class SzurubooruAPI:
         except Exception:
             return []
     
+    async def get_all_posts(self, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Get all posts with pagination"""
+        try:
+            params = {
+                'limit': limit,
+                'offset': offset
+            }
+            
+            async with self.session.get(
+                f"{self.config.szurubooru_url}/api/posts/",
+                params=params
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get('results', [])
+                else:
+                    return []
+                    
+        except Exception:
+            return []
+    
+    async def get_total_post_count(self) -> int:
+        """Get total number of posts in the instance"""
+        try:
+            params = {
+                'limit': 1,  # We only need the total count
+                'offset': 0
+            }
+            
+            async with self.session.get(
+                f"{self.config.szurubooru_url}/api/posts/",
+                params=params
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get('total', 0)
+                else:
+                    return 0
+                    
+        except Exception:
+            return 0
+    
     async def update_post_tags(self, post_id: int, tags: List[str], version: int) -> bool:
         """Update tags for a post"""
         try:
@@ -338,12 +380,24 @@ class WDTaggerManager:
     
     def _process_result(self, result) -> Tuple[List[str], str]:
         """Process a single tagger result"""
-        # Extract tags from general_tag_data
+        # Extract tags from both general_tag_data and character_tag_data
         tags = []
+        
+        # Process general tags
         if hasattr(result, 'general_tag_data') and result.general_tag_data:
             for tag, confidence in result.general_tag_data.items():
                 if confidence >= self.config.confidence_threshold and len(tags) < self.config.max_tags_per_image:
                     tags.append(tag)
+        
+        # Process character tags (often more important, so add them first)
+        character_tags = []
+        if hasattr(result, 'character_tag_data') and result.character_tag_data:
+            for tag, confidence in result.character_tag_data.items():
+                if confidence >= self.config.confidence_threshold:
+                    character_tags.append(tag)
+        
+        # Add character tags to the beginning of the list (they're usually more important)
+        tags = character_tags + tags
         
         # Extract safety rating
         safety = "unsafe"  # Default safety
@@ -380,6 +434,22 @@ class WDTaggerManager:
                 cleaned_tags.append(clean_tag)
         
         return cleaned_tags, safety
+    
+    def _extract_character_tags_only(self, result) -> List[str]:
+        """Extract only character tags from WD14 tagger result"""
+        character_tags = []
+        
+        # Process character tags only
+        if hasattr(result, 'character_tag_data') and result.character_tag_data:
+            for tag, confidence in result.character_tag_data.items():
+                if confidence >= self.config.confidence_threshold:
+                    # Clean the tag (remove confidence values if present)
+                    import re
+                    clean_tag = re.sub(r'\s*\([\d.]+\)$', '', str(tag)).strip()
+                    if clean_tag and len(clean_tag) > 1:
+                        character_tags.append(clean_tag)
+        
+        return character_tags
     
     async def tag_image(self, image_path: Path) -> Tuple[List[str], str]:
         """Tag a single image using WD14 Tagger. Returns (tags, safety)"""
@@ -915,16 +985,11 @@ class MediaManager:
         
         # Create update tasks
         tasks = []
-        files_to_delete = []  # Track files to delete after tagging
         
         for (file_path, post_data), (new_tags, safety) in zip(posts_data, tag_results):
             if post_data:  # Update post even if no AI tags (to remove 'tagme')
                 task = self._update_single_post_tags(post_data, new_tags, safety)
                 tasks.append(task)
-                
-                # Add file to deletion list (will delete after tagging)
-                if self.config.delete_after_upload:
-                    files_to_delete.append(file_path)
         
         # Execute all updates concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -934,16 +999,6 @@ class MediaManager:
         self.metrics.files_tagged += successful_updates
         
         print(f"Successfully updated {successful_updates}/{len(posts_data)} posts")
-        
-        # Delete files after successful tagging
-        if files_to_delete:
-            print(f"Deleting {len(files_to_delete)} processed files...")
-            for file_path in files_to_delete:
-                try:
-                    if file_path.exists():
-                        await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
-                except Exception as e:
-                    logger.warning(f"Failed to delete {file_path}: {e}")
     
     async def _update_single_post_tags(self, post_data: Dict, new_tags: List[str], safety: str) -> bool:
         """Update tags for a single post"""
@@ -1046,7 +1101,7 @@ class MediaManager:
         
         # Phase 2: Parallel AI Tagging (if WD14 available and successful uploads exist)
         tagged_count = 0
-        if WD14_AVAILABLE and successful_uploads and self.config.gpu_enabled:
+        if successful_uploads:  # Always try tagging if we have successful uploads
             try:
                 # Extract file paths for tagging, filtering out video files
                 files_to_tag = []
@@ -1060,60 +1115,76 @@ class MediaManager:
                 if video_files:
                     print(f"Skipping AI tagging for {len(video_files)} video files")
                 
-                print(f"Starting AI tagging for {len(files_to_tag)} image files...")
-                
-                # Check if files still exist before tagging
-                existing_files = [f for f in files_to_tag if f.exists()]
-                missing_files = len(files_to_tag) - len(existing_files)
-                if missing_files > 0:
-                    print(f"Warning: {missing_files} files missing for AI tagging")
-                
-                if existing_files:
-                    # Batch tag images using GPU
-                    print(f"Running AI tagger on {len(existing_files)} image files...")
-                    tag_results = await self.wd_tagger.tag_images_batch(existing_files)
+                if files_to_tag:
+                    print(f"Starting AI tagging for {len(files_to_tag)} image files...")
                     
-                    # Debug: Check tag results
-                    if tag_results:
-                        non_empty_tags = len([tags for tags, _ in tag_results if tags])
-                        print(f"AI tagging results: {non_empty_tags}/{len(tag_results)} files got tags")
-                    
-                    # Update posts with tags (match files to posts)
-                    if tag_results:
-                        # Need to match files to their post data
-                        files_with_posts = []
-                        for file_path, post_data in successful_uploads:
-                            if file_path in existing_files:
-                                files_with_posts.append((file_path, post_data))
-                        
-                        await self.update_post_tags_batch(files_with_posts, tag_results)
-                        tagged_count = len([tags for tags, _ in tag_results if tags])
+                    # Check if WD14 is available
+                    if not WD14_AVAILABLE:
+                        print("⚠️  WD14 Tagger not available - skipping AI tagging")
+                        # Still need to remove 'tagme' tags from uploaded posts
+                        await self._remove_tagme_from_uploads(successful_uploads)
+                    elif not self.config.gpu_enabled:
+                        print("⚠️  GPU disabled - using CPU for AI tagging")
+                        # Continue with CPU tagging
+                        await self._tag_uploaded_files(successful_uploads, files_to_tag)
+                        tagged_count = len(files_to_tag)
+                    else:
+                        # GPU tagging
+                        await self._tag_uploaded_files(successful_uploads, files_to_tag)
+                        tagged_count = len(files_to_tag)
                 else:
-                    print("No files available for AI tagging")
+                    print("No image files to tag (all were videos)")
+                    # Still need to remove 'tagme' tags from video posts
+                    await self._remove_tagme_from_uploads(successful_uploads)
                 
             except Exception as e:
                 logger.error(f"Tagging phase failed: {e}")
                 import traceback
                 logger.error(f"Tagging error traceback: {traceback.format_exc()}")
+                print(f"⚠️  Tagging failed: {e}")
+        else:
+            print("No successful uploads to tag")
         
-        # Handle duplicate file deletion (duplicates don't get tagged, so delete them here)
-        if self.config.delete_after_upload and duplicate_count > 0:
-            duplicate_files = []
-            for file_path, success, post_data in upload_results:
-                if success and not post_data:  # Duplicate file
-                    duplicate_files.append(file_path)
+        # Handle file deletion for all processed files
+        if self.config.delete_after_upload:
+            # Delete duplicate files (they don't get tagged, so delete them here)
+            if duplicate_count > 0:
+                duplicate_files = []
+                for file_path, success, post_data in upload_results:
+                    if success and not post_data:  # Duplicate file
+                        duplicate_files.append(file_path)
+                
+                if duplicate_files:
+                    print(f"Deleting {len(duplicate_files)} duplicate files...")
+                    deleted_count = 0
+                    for file_path in duplicate_files:
+                        try:
+                            if file_path.exists():
+                                await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
+                                deleted_count += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to delete duplicate {file_path}: {e}")
+                    print(f"Successfully deleted {deleted_count} duplicate files")
             
-            if duplicate_files:
-                print(f"Deleting {len(duplicate_files)} duplicate files...")
-                deleted_count = 0
-                for file_path in duplicate_files:
-                    try:
-                        if file_path.exists():
-                            await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
-                            deleted_count += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to delete duplicate {file_path}: {e}")
-                print(f"Successfully deleted {deleted_count} duplicate files")
+            # Delete successfully uploaded files (they were already deleted during tagging phase)
+            # But if tagging was skipped, we need to delete them here
+            if successful_uploads:
+                files_to_delete = []
+                for file_path, _ in successful_uploads:
+                    if file_path.exists():
+                        files_to_delete.append(file_path)
+                
+                if files_to_delete:
+                    print(f"Deleting {len(files_to_delete)} uploaded files...")
+                    deleted_count = 0
+                    for file_path in files_to_delete:
+                        try:
+                            if file_path.exists():
+                                await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
+                                deleted_count += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to delete uploaded file {file_path}: {e}")
+                    print(f"Successfully deleted {deleted_count} uploaded files")
         
         # Calculate final metrics
         elapsed_time = time.time() - self.metrics.start_time
@@ -1129,6 +1200,108 @@ class MediaManager:
             "tagging_rate": self.metrics.tagging_rate,
             "total_processed": successful_processing
         }
+    
+    async def _tag_uploaded_files(self, successful_uploads: List[Tuple[Path, Dict]], files_to_tag: List[Path]):
+        """Tag uploaded files and update posts"""
+        try:
+            # Check if files still exist before tagging
+            existing_files = [f for f in files_to_tag if f.exists()]
+            missing_files = len(files_to_tag) - len(existing_files)
+            if missing_files > 0:
+                print(f"Warning: {missing_files} files missing for AI tagging")
+            
+            if existing_files:
+                # Batch tag images using GPU
+                print(f"Running AI tagger on {len(existing_files)} image files...")
+                tag_results = await self.wd_tagger.tag_images_batch(existing_files)
+                
+                # Debug: Check tag results
+                if tag_results:
+                    non_empty_tags = len([tags for tags, _ in tag_results if tags])
+                    print(f"AI tagging results: {non_empty_tags}/{len(tag_results)} files got tags")
+                
+                # Update posts with tags (match files to posts)
+                if tag_results:
+                    # Need to match files to their post data
+                    files_with_posts = []
+                    for file_path, post_data in successful_uploads:
+                        if file_path in existing_files:
+                            files_with_posts.append((file_path, post_data))
+                    
+                    await self.update_post_tags_batch(files_with_posts, tag_results)
+            else:
+                print("No files available for AI tagging")
+                # Still need to remove 'tagme' tags
+                await self._remove_tagme_from_uploads(successful_uploads)
+                
+        except Exception as e:
+            logger.error(f"Error in _tag_uploaded_files: {e}")
+            # Fallback: just remove tagme tags
+            await self._remove_tagme_from_uploads(successful_uploads)
+    
+    async def _remove_tagme_from_uploads(self, successful_uploads: List[Tuple[Path, Dict]]):
+        """Remove 'tagme' tags from uploaded posts (for videos or when AI tagging fails)"""
+        try:
+            print("Removing 'tagme' tags from uploaded posts...")
+            
+            # Create tasks for removing tagme tags
+            tasks = []
+            for file_path, post_data in successful_uploads:
+                task = self._remove_tagme_from_post(post_data)
+                tasks.append(task)
+            
+            # Execute all tasks concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Count successful updates
+            successful_updates = sum(1 for result in results if result and not isinstance(result, Exception))
+            print(f"Successfully removed 'tagme' tags from {successful_updates}/{len(successful_uploads)} posts")
+            
+        except Exception as e:
+            logger.error(f"Error removing tagme tags: {e}")
+    
+    async def _remove_tagme_from_post(self, post_data: Dict) -> bool:
+        """Remove 'tagme' tag from a single post"""
+        try:
+            post_id = post_data.get('id')
+            version = post_data.get('version', 1)
+            
+            if not post_id:
+                return False
+            
+            # Get current tags and remove 'tagme' tag
+            current_tags = [tag['names'][0] for tag in post_data.get('tags', [])]
+            if self.config.tagme_tag in current_tags:
+                current_tags.remove(self.config.tagme_tag)
+            
+            # Prepare update data
+            update_data = {
+                'version': version,
+                'tags': current_tags
+            }
+            
+            # Create dedicated API connection for update
+            async with SzurubooruAPI(self.config) as api:
+                async with api.session.put(
+                    f"{self.config.szurubooru_url}/api/post/{post_id}",
+                    json=update_data
+                ) as response:
+                    if response.status == 200:
+                        return True
+                    elif response.status == 409:  # Version conflict
+                        # Retry with incremented version
+                        update_data['version'] = version + 1
+                        async with api.session.put(
+                            f"{self.config.szurubooru_url}/api/post/{post_id}",
+                            json=update_data
+                        ) as retry_response:
+                            return retry_response.status == 200
+                    else:
+                        return False
+        
+        except Exception as e:
+            logger.warning(f"Failed to remove tagme from post {post_data.get('id', 'unknown')}: {e}")
+            return False
     
     async def auto_tag_posts(self) -> int:
         """Auto-tag posts that have the 'tagme' tag - continues until no more posts need tagging"""
@@ -1510,7 +1683,242 @@ class MediaManager:
         except Exception as e:
             print(f"Error in processing untagged posts: {e}")
             return 0
+    
+    async def add_characters_to_all_posts(self) -> int:
+        """Process ALL posts in the instance and add missing character tags only"""
+        if not WD14_AVAILABLE:
+            print("WD14 Tagger not available for character tagging")
             return 0
+        
+        try:
+            # Initialize WD14 Tagger
+            self.wd_tagger.initialize()
+            print("WD14 Tagger initialized for character-only processing")
+            
+            async with SzurubooruAPI(self.config) as api:
+                # Test connection
+                if not await api.test_connection():
+                    print("Failed to connect to Szurubooru")
+                    return 0
+                
+                # Get total number of posts
+                total_posts = await api.get_total_post_count()
+                if total_posts == 0:
+                    print("No posts found in the instance")
+                    return 0
+                
+                print(f"🎯 Starting character tag addition for ALL {total_posts:,} posts")
+                print("📝 This will ONLY add character tags, leaving all existing tags intact")
+                print("=" * 70)
+                
+                # Processing counters - use dictionary for mutable state
+                counters = {
+                    'total_processed': 0,
+                    'posts_updated': 0,
+                    'characters_added': 0,
+                    'videos_skipped': 0,
+                    'failed_count': 0,
+                    'already_had_characters': 0
+                }
+                
+                # Batch processing settings - use configured batch size
+                batch_size = self.config.batch_discovery_size or 100  # Use config or default to 100
+                
+                # Create overall progress bar
+                with tqdm(total=total_posts, desc="Processing all posts", unit="post") as overall_pbar:
+                    
+                    # Process posts in batches
+                    for offset in range(0, total_posts, batch_size):
+                        # Get batch of posts
+                        posts = await api.get_all_posts(limit=batch_size, offset=offset)
+                        
+                        if not posts:
+                            break  # No more posts
+                        
+                        print(f"\n📦 Processing batch {offset//batch_size + 1}: posts {offset+1} to {offset+len(posts)}")
+                        
+                        # Filter out videos and prepare for parallel processing
+                        image_posts = []
+                        for post in posts:
+                            post_type = post.get('type', 'image')
+                            if post_type not in ['video', 'animation']:
+                                image_posts.append(post)
+                            else:
+                                counters['videos_skipped'] += 1
+                                counters['total_processed'] += 1
+                                overall_pbar.update(1)
+                        
+                        if not image_posts:
+                            continue  # Skip to next batch if no images
+                        
+                        # Process image posts in parallel batches
+                        await self._process_character_batch_parallel(api, image_posts, overall_pbar, counters)
+                        
+                        # Update counters
+                        counters['total_processed'] += len(posts)
+                        
+                        # Small delay between batches
+                        await asyncio.sleep(0.2)
+                
+                # Final results
+                print(f"\n🎉 Character tagging complete!")
+                print(f"📊 Final Results:")
+                print(f"  Total posts processed: {counters['total_processed']:,}")
+                print(f"  Posts updated: {counters['posts_updated']:,}")
+                print(f"  Character tags added: {counters['characters_added']:,}")
+                print(f"  Posts that already had characters: {counters['already_had_characters']:,}")
+                print(f"  Videos skipped: {counters['videos_skipped']:,}")
+                print(f"  Failed: {counters['failed_count']:,}")
+                
+                success_rate = (counters['posts_updated'] / (counters['total_processed'] - counters['videos_skipped'])) * 100 if (counters['total_processed'] - counters['videos_skipped']) > 0 else 0
+                print(f"  Success rate: {success_rate:.1f}%")
+                
+                return counters['posts_updated']
+                
+        except Exception as e:
+            print(f"Error in character tagging process: {e}")
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}")
+            return 0
+    
+    async def _process_character_batch_parallel(self, api, posts_batch: List[Dict], progress_bar, counters):
+        """Process a batch of posts for character tagging in parallel"""
+        if not posts_batch:
+            return
+        
+        # Create tasks for parallel processing
+        tasks = []
+        for post in posts_batch:
+            task = self._process_single_post_characters(api, post)
+            tasks.append(task)
+        
+        # Execute all character tagging tasks concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results
+        for i, result in enumerate(results):
+            post = posts_batch[i]
+            post_id = post.get('id', 'unknown')
+            
+            if isinstance(result, Exception):
+                counters['failed_count'] += 1
+                print(f"  ❌ Error processing post {post_id}: {result}")
+            elif result:
+                # Result is a tuple: (updated, characters_added_count, already_had_characters)
+                updated, chars_added, had_chars = result
+                if updated:
+                    counters['posts_updated'] += 1
+                    counters['characters_added'] += chars_added
+                    if chars_added > 0:
+                        print(f"  ✅ Post {post_id}: Added {chars_added} character tags")
+                if had_chars:
+                    counters['already_had_characters'] += 1
+            else:
+                counters['failed_count'] += 1
+            
+            # Update progress bar
+            progress_bar.update(1)
+            progress_bar.set_postfix({
+                'Updated': counters['posts_updated'],
+                'Characters Added': counters['characters_added'],
+                'Videos Skipped': counters['videos_skipped'],
+                'Failed': counters['failed_count']
+            })
+    
+    async def _process_single_post_characters(self, api, post: Dict) -> Tuple[bool, int, bool]:
+        """Process a single post for character tagging. Returns (updated, characters_added, already_had_characters)"""
+        try:
+            post_id = post['id']
+            version = post['version']
+            current_tags = [tag['names'][0] for tag in post.get('tags', [])]
+            
+            # Check if post already has character-like tags
+            existing_character_tags = []
+            for tag in current_tags:
+                # Simple heuristic: character tags often have underscores and proper names
+                if '_' in tag and any(c.isupper() for c in tag.replace('_', '')):
+                    existing_character_tags.append(tag)
+            
+            # Get content URL and download image for tagging
+            content_url = post['contentUrl']
+            if not content_url:
+                return False, 0, False
+            
+            # Construct full URL if it's a relative path
+            if not content_url.startswith('http'):
+                content_url = f"{self.config.szurubooru_url}/{content_url.lstrip('/')}"
+            
+            # Download image temporarily
+            temp_path = Path(f"temp_char_{post_id}.jpg")
+            try:
+                async with api.session.get(content_url) as response:
+                    if response.status == 200:
+                        async with aiofiles.open(temp_path, 'wb') as f:
+                            await f.write(await response.read())
+                    else:
+                        return False, 0, False
+                
+                # Run WD14 tagger and extract ONLY character tags
+                tagger_result = await asyncio.get_event_loop().run_in_executor(
+                    None, 
+                    self.wd_tagger.tagger.tag, 
+                    str(temp_path)
+                )
+                
+                # Extract only character tags
+                new_character_tags = self.wd_tagger._extract_character_tags_only(tagger_result)
+                
+                if new_character_tags:
+                    # Check which character tags are actually new
+                    new_tags_to_add = []
+                    for char_tag in new_character_tags:
+                        if char_tag not in current_tags:
+                            new_tags_to_add.append(char_tag)
+                    
+                    if new_tags_to_add:
+                        # Add only the new character tags to existing tags
+                        all_tags = current_tags + new_tags_to_add
+                        
+                        # Update the post
+                        update_data = {
+                            'version': version,
+                            'tags': all_tags
+                        }
+                        
+                        # Make the update request
+                        async with api.session.put(
+                            f"{self.config.szurubooru_url}/api/post/{post_id}",
+                            json=update_data
+                        ) as response:
+                            if response.status == 200:
+                                return True, len(new_tags_to_add), False
+                            elif response.status == 409:  # Version conflict
+                                # Try again with incremented version
+                                update_data['version'] = version + 1
+                                async with api.session.put(
+                                    f"{self.config.szurubooru_url}/api/post/{post_id}",
+                                    json=update_data
+                                ) as retry_response:
+                                    if retry_response.status == 200:
+                                        return True, len(new_tags_to_add), False
+                                    else:
+                                        return False, 0, False
+                            else:
+                                return False, 0, False
+                    else:
+                        # Post already has all detected character tags
+                        return False, 0, True
+                else:
+                    # No character tags detected
+                    return False, 0, False
+                
+            finally:
+                # Clean up temporary file
+                if temp_path.exists():
+                    temp_path.unlink()
+                    
+        except Exception as e:
+            return False, 0, False
     
     async def run_batched_optimized_cycle(self):
         """Run batched high-performance processing cycle for large directories"""
@@ -1787,9 +2195,9 @@ async def main():
     parser = argparse.ArgumentParser(description="Szurubooru High-Performance Media Manager")
     parser.add_argument("--config", "-c", default="config.json", help="Configuration file path")
     parser.add_argument("--mode", "-m", 
-                       choices=["optimized", "upload", "tag", "untagged", "full", "legacy"], 
+                       choices=["optimized", "upload", "tag", "untagged", "add-characters", "full", "legacy"], 
                        default="optimized", 
-                       help="Operation mode: optimized (recommended), upload, tag (comprehensive), untagged, full, or legacy")
+                       help="Operation mode: optimized (recommended), upload, tag (comprehensive), untagged, add-characters (add characters to ALL posts), full, or legacy")
     parser.add_argument("--schedule", "-s", help="Schedule in cron format (e.g., '*/30 * * * *' for every 30 minutes)")
     parser.add_argument("--create-config", action="store_true", help="Create an optimized configuration file")
     parser.add_argument("--test-connection", action="store_true", help="Test connection to Szurubooru")
@@ -1872,18 +2280,35 @@ async def main():
         # Scheduled mode
         print(f"Starting scheduled mode: {args.schedule}")
         
-        def run_scheduled():
-            asyncio.run(manager.run_optimized_cycle())
+        # Parse cron expression
+        import croniter
+        from datetime import datetime
         
-        schedule.every().cron(args.schedule).do(run_scheduled)
+        # Create cron iterator
+        cron = croniter.croniter(args.schedule, datetime.now())
         
         # Run initial cycle
+        print("Running initial cycle...")
         await manager.run_optimized_cycle()
         
-        # Keep running
+        # Keep running with scheduled tasks
         while True:
-            schedule.run_pending()
-            await asyncio.sleep(60)  # Check every minute
+            # Get next run time
+            next_run = cron.get_next(datetime)
+            now = datetime.now()
+            
+            # Calculate seconds until next run
+            seconds_until_next = (next_run - now).total_seconds()
+            
+            print(f"Next scheduled run: {next_run.strftime('%Y-%m-%d %H:%M:%S')} (in {seconds_until_next:.0f} seconds)")
+            
+            # Sleep until next run time
+            if seconds_until_next > 0:
+                await asyncio.sleep(seconds_until_next)
+            
+            # Run the scheduled task
+            print(f"Running scheduled task at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
+            await manager.run_optimized_cycle()
     else:
         # Single run mode
         if args.mode == "optimized":
@@ -1896,6 +2321,9 @@ async def main():
         elif args.mode == "untagged":
             processed_count = await manager.process_untagged_posts()
             print(f"Processed {processed_count} untagged posts")
+        elif args.mode == "add-characters":
+            processed_count = await manager.add_characters_to_all_posts()
+            print(f"Added character tags to {processed_count} posts")
         elif args.mode == "full":
             # Legacy full cycle for compatibility
             await manager.run_optimized_cycle()

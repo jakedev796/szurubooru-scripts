@@ -95,6 +95,78 @@ python szurubooru_manager.py --mode tag         # Tag existing 'tagme' posts
 python szurubooru_manager.py --mode untagged    # Process posts with no tags
 ```
 
+### 🐳 Docker Quick Start
+
+**Option 1: Using docker-compose (Recommended)**
+
+**For GPU users:**
+```bash
+# 1. Build and start the container (GPU version)
+docker-compose up -d
+
+# 2. View logs
+docker-compose logs -f
+
+# 3. Stop the container
+docker-compose down
+```
+
+**For CPU-only users:**
+```bash
+# 1. Build and start the container (CPU version)
+docker-compose -f docker-compose.cpu.yml up -d
+
+# 2. View logs
+docker-compose -f docker-compose.cpu.yml logs -f
+
+# 3. Stop the container
+docker-compose -f docker-compose.cpu.yml down
+```
+
+**Option 2: Manual Docker**
+
+**For GPU users:**
+```bash
+# 1. Build the image
+docker build -t szurubooru-manager .
+
+# 2. Run the container
+docker run -d \
+  --name szurubooru-manager \
+  -v $(pwd)/uploads:/app/uploads:ro \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/config.json:/app/config.json:ro \
+  szurubooru-manager
+```
+
+**For CPU-only users:**
+```bash
+# 1. Build the image
+docker build -f Dockerfile.cpu -t szurubooru-manager .
+
+# 2. Run the container
+docker run -d \
+  --name szurubooru-manager \
+  -v $(pwd)/uploads:/app/uploads:ro \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/config.json:/app/config.json:ro \
+  szurubooru-manager
+```
+
+**View logs:**
+```bash
+docker logs -f szurubooru-manager
+```
+
+**Docker Features**:
+- ✅ **Automatic scheduling**: Runs every 30 minutes by default
+- ✅ **Volume mounts**: Uploads, logs, and config persist on host
+- ✅ **GPU support**: Uncomment GPU section in docker-compose.yml
+- ✅ **Health checks**: Automatic restart on failure
+- ✅ **Resource limits**: Memory and CPU constraints
+- ✅ **Logging**: Rotated log files with size limits
+```
+
 ---
 
 ## 🎯 Operation Modes
@@ -128,6 +200,14 @@ Process posts with no tags at all
 - Adds `video` tag to untagged videos
 - AI tags untagged images
 - Perfect for cleaning up old uploads that missed tagging
+
+### **add-characters**
+Brute-force character tagging for your entire collection
+- **Processes ALL posts** in your Szurubooru instance
+- **Only extracts and adds character tags** from WD14 Tagger
+- **Preserves all existing tags** - only adds missing character tags
+- Skips videos automatically
+- Perfect for retroactively adding characters to your entire collection
 
 ### **full** / **legacy**
 Backward compatibility modes
@@ -221,6 +301,12 @@ python szurubooru_manager.py --mode upload
 python szurubooru_manager.py --mode tag  
 ```
 *Process existing posts with 'tagme' tags*
+
+**🎭 Character-Only Mode**  
+```bash
+python szurubooru_manager.py --mode add-characters
+```
+*Add character tags to ALL posts in your entire collection*
 
 **🔧 Legacy Mode**
 ```bash
