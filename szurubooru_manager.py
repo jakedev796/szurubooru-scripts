@@ -293,6 +293,28 @@ class SzurubooruAPI:
         except Exception:
             return []
     
+    async def get_posts_by_id_range(self, start_id: int, end_id: int, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Get posts within a specific ID range using Szurubooru query syntax"""
+        try:
+            params = {
+                'query': f'id:{start_id}..{end_id}',
+                'limit': limit,
+                'offset': offset
+            }
+            
+            async with self.session.get(
+                f"{self.config.szurubooru_url}/api/posts/",
+                params=params
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get('results', [])
+                else:
+                    return []
+                    
+        except Exception:
+            return []
+    
     async def get_total_post_count(self) -> int:
         """Get total number of posts in the instance"""
         try:
@@ -1684,8 +1706,13 @@ class MediaManager:
             print(f"Error in processing untagged posts: {e}")
             return 0
     
-    async def add_characters_to_all_posts(self) -> int:
-        """Process ALL posts in the instance and add missing character tags only"""
+    async def add_characters_to_all_posts(self, start_post_id: Optional[int] = None, end_post_id: Optional[int] = None) -> int:
+        """Process posts in the instance and add missing character tags only
+        
+        Args:
+            start_post_id: Starting post ID (inclusive). If None, starts from 1.
+            end_post_id: Ending post ID (inclusive). If None, processes all posts.
+        """
         if not WD14_AVAILABLE:
             print("WD14 Tagger not available for character tagging")
             return 0
@@ -1707,7 +1734,29 @@ class MediaManager:
                     print("No posts found in the instance")
                     return 0
                 
-                print(f"🎯 Starting character tag addition for ALL {total_posts:,} posts")
+                # Determine range
+                if start_post_id is None:
+                    start_post_id = 1
+                if end_post_id is None:
+                    end_post_id = total_posts
+                
+                # Validate range
+                if start_post_id < 1:
+                    print(f"Invalid start_post_id: {start_post_id}. Must be >= 1")
+                    return 0
+                if end_post_id > total_posts:
+                    print(f"Invalid end_post_id: {end_post_id}. Total posts available: {total_posts}")
+                    return 0
+                if start_post_id > end_post_id:
+                    print(f"Invalid range: start_post_id ({start_post_id}) > end_post_id ({end_post_id})")
+                    return 0
+                
+                posts_to_process = end_post_id - start_post_id + 1
+                
+                if start_post_id == 1 and end_post_id == total_posts:
+                    print(f"🎯 Starting character tag addition for ALL {total_posts:,} posts")
+                else:
+                    print(f"🎯 Starting character tag addition for posts {start_post_id:,} to {end_post_id:,} ({posts_to_process:,} posts)")
                 print("📝 This will ONLY add character tags, leaving all existing tags intact")
                 print("=" * 70)
                 
@@ -1725,40 +1774,80 @@ class MediaManager:
                 batch_size = self.config.batch_discovery_size or 100  # Use config or default to 100
                 
                 # Create overall progress bar
-                with tqdm(total=total_posts, desc="Processing all posts", unit="post") as overall_pbar:
+                with tqdm(total=posts_to_process, desc="Processing posts", unit="post") as overall_pbar:
                     
-                    # Process posts in batches
-                    for offset in range(0, total_posts, batch_size):
-                        # Get batch of posts
-                        posts = await api.get_all_posts(limit=batch_size, offset=offset)
+                    if start_post_id is not None and end_post_id is not None:
+                        # Use efficient ID range query when range is specified
+                        print(f"🎯 Using efficient ID range query: id:{start_post_id}..{end_post_id}")
                         
-                        if not posts:
-                            break  # No more posts
-                        
-                        print(f"\n📦 Processing batch {offset//batch_size + 1}: posts {offset+1} to {offset+len(posts)}")
-                        
-                        # Filter out videos and prepare for parallel processing
-                        image_posts = []
-                        for post in posts:
-                            post_type = post.get('type', 'image')
-                            if post_type not in ['video', 'animation']:
-                                image_posts.append(post)
-                            else:
-                                counters['videos_skipped'] += 1
-                                counters['total_processed'] += 1
-                                overall_pbar.update(1)
-                        
-                        if not image_posts:
-                            continue  # Skip to next batch if no images
-                        
-                        # Process image posts in parallel batches
-                        await self._process_character_batch_parallel(api, image_posts, overall_pbar, counters)
-                        
-                        # Update counters
-                        counters['total_processed'] += len(posts)
-                        
-                        # Small delay between batches
-                        await asyncio.sleep(0.2)
+                        # Process posts in batches using ID range query
+                        for offset in range(0, posts_to_process, batch_size):
+                            # Get batch of posts within the ID range
+                            posts = await api.get_posts_by_id_range(start_post_id, end_post_id, limit=batch_size, offset=offset)
+                            
+                            if not posts:
+                                break  # No more posts in range
+                            
+                            print(f"\n📦 Processing batch {offset//batch_size + 1}: {len(posts)} posts in range")
+                            
+                            # Filter out videos and prepare for parallel processing
+                            image_posts = []
+                            for post in posts:
+                                post_type = post.get('type', 'image')
+                                if post_type not in ['video', 'animation']:
+                                    image_posts.append(post)
+                                else:
+                                    counters['videos_skipped'] += 1
+                            
+                            # Update progress for all posts in this batch (including videos)
+                            overall_pbar.update(len(posts))
+                            
+                            if not image_posts:
+                                continue  # Skip to next batch if no images
+                            
+                            # Process image posts in parallel batches
+                            await self._process_character_batch_parallel(api, image_posts, overall_pbar, counters)
+                            
+                            # Update total processed counter
+                            counters['total_processed'] += len(posts)
+                            
+                            # Small delay between batches
+                            await asyncio.sleep(0.2)
+                    else:
+                        # Use original approach for processing all posts
+                        # Process posts in batches
+                        for offset in range(0, total_posts, batch_size):
+                            # Get batch of posts
+                            posts = await api.get_all_posts(limit=batch_size, offset=offset)
+                            
+                            if not posts:
+                                break  # No more posts
+                            
+                            print(f"\n📦 Processing batch {offset//batch_size + 1}: posts {offset+1} to {offset+len(posts)}")
+                            
+                            # Filter out videos and prepare for parallel processing
+                            image_posts = []
+                            for post in posts:
+                                post_type = post.get('type', 'image')
+                                if post_type not in ['video', 'animation']:
+                                    image_posts.append(post)
+                                else:
+                                    counters['videos_skipped'] += 1
+                            
+                            # Update progress for all posts in this batch (including videos)
+                            overall_pbar.update(len(posts))
+                            
+                            if not image_posts:
+                                continue  # Skip to next batch if no images
+                            
+                            # Process image posts in parallel batches
+                            await self._process_character_batch_parallel(api, image_posts, overall_pbar, counters)
+                            
+                            # Update total processed counter
+                            counters['total_processed'] += len(posts)
+                            
+                            # Small delay between batches
+                            await asyncio.sleep(0.2)
                 
                 # Final results
                 print(f"\n🎉 Character tagging complete!")
@@ -1816,8 +1905,7 @@ class MediaManager:
             else:
                 counters['failed_count'] += 1
             
-            # Update progress bar
-            progress_bar.update(1)
+            # Update progress bar postfix with current stats
             progress_bar.set_postfix({
                 'Updated': counters['posts_updated'],
                 'Characters Added': counters['characters_added'],
@@ -1832,12 +1920,9 @@ class MediaManager:
             version = post['version']
             current_tags = [tag['names'][0] for tag in post.get('tags', [])]
             
-            # Check if post already has character-like tags
-            existing_character_tags = []
-            for tag in current_tags:
-                # Simple heuristic: character tags often have underscores and proper names
-                if '_' in tag and any(c.isupper() for c in tag.replace('_', '')):
-                    existing_character_tags.append(tag)
+            # Note: We'll detect if posts already have character tags by checking
+            # if the detected character tags are already present in the post's tags
+            # This is more reliable than trying to guess character tags beforehand
             
             # Get content URL and download image for tagging
             content_url = post['contentUrl']
@@ -2197,12 +2282,14 @@ async def main():
     parser.add_argument("--mode", "-m", 
                        choices=["optimized", "upload", "tag", "untagged", "add-characters", "full", "legacy"], 
                        default="optimized", 
-                       help="Operation mode: optimized (recommended), upload, tag (comprehensive), untagged, add-characters (add characters to ALL posts), full, or legacy")
+                       help="Operation mode: optimized (recommended), upload, tag (comprehensive), untagged, add-characters (add characters to posts, optionally with --start-post and --end-post), full, or legacy")
     parser.add_argument("--schedule", "-s", help="Schedule in cron format (e.g., '*/30 * * * *' for every 30 minutes)")
     parser.add_argument("--create-config", action="store_true", help="Create an optimized configuration file")
     parser.add_argument("--test-connection", action="store_true", help="Test connection to Szurubooru")
     parser.add_argument("--benchmark", action="store_true", help="Run performance benchmark")
     parser.add_argument("--check-video", help="Check if a video file is valid and get its details")
+    parser.add_argument("--start-post", type=int, help="Starting post ID for add-characters mode (inclusive)")
+    parser.add_argument("--end-post", type=int, help="Ending post ID for add-characters mode (inclusive)")
     
     args = parser.parse_args()
     
@@ -2322,7 +2409,10 @@ async def main():
             processed_count = await manager.process_untagged_posts()
             print(f"Processed {processed_count} untagged posts")
         elif args.mode == "add-characters":
-            processed_count = await manager.add_characters_to_all_posts()
+            processed_count = await manager.add_characters_to_all_posts(
+                start_post_id=args.start_post,
+                end_post_id=args.end_post
+            )
             print(f"Added character tags to {processed_count} posts")
         elif args.mode == "full":
             # Legacy full cycle for compatibility

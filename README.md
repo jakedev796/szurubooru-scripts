@@ -202,12 +202,13 @@ Process posts with no tags at all
 - Perfect for cleaning up old uploads that missed tagging
 
 ### **add-characters**
-Brute-force character tagging for your entire collection
-- **Processes ALL posts** in your Szurubooru instance
+Brute-force character tagging for your collection
+- **Processes posts** in your Szurubooru instance (all posts by default)
 - **Only extracts and adds character tags** from WD14 Tagger
 - **Preserves all existing tags** - only adds missing character tags
 - Skips videos automatically
-- Perfect for retroactively adding characters to your entire collection
+- Perfect for retroactively adding characters to your collection
+- **Range support**: Use `--start-post` and `--end-post` to process specific ranges
 
 ### **full** / **legacy**
 Backward compatibility modes
@@ -304,9 +305,16 @@ python szurubooru_manager.py --mode tag
 
 **🎭 Character-Only Mode**  
 ```bash
+# Add characters to all posts
 python szurubooru_manager.py --mode add-characters
+
+# Add characters to posts 1-70000
+python szurubooru_manager.py --mode add-characters --start-post 1 --end-post 70000
+
+# Add characters to posts 50000-100000
+python szurubooru_manager.py --mode add-characters --start-post 50000 --end-post 100000
 ```
-*Add character tags to ALL posts in your entire collection*
+*Add character tags to posts (all posts by default, or specify range with --start-post and --end-post)*
 
 **🔧 Legacy Mode**
 ```bash
