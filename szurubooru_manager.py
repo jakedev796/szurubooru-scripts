@@ -2362,42 +2362,8 @@ async def main():
         print(f"Max concurrent uploads: {config.max_concurrent_uploads}")
         print(f"GPU batch size: {config.gpu_batch_size}")
     
-    # Run based on mode
-    if args.schedule:
-        # Scheduled mode
-        print(f"Starting scheduled mode: {args.schedule}")
-        
-        # Parse cron expression
-        import croniter
-        from datetime import datetime
-        
-        # Create cron iterator
-        cron = croniter.croniter(args.schedule, datetime.now())
-        
-        # Run initial cycle
-        print("Running initial cycle...")
-        await manager.run_optimized_cycle()
-        
-        # Keep running with scheduled tasks
-        while True:
-            # Get next run time
-            next_run = cron.get_next(datetime)
-            now = datetime.now()
-            
-            # Calculate seconds until next run
-            seconds_until_next = (next_run - now).total_seconds()
-            
-            print(f"Next scheduled run: {next_run.strftime('%Y-%m-%d %H:%M:%S')} (in {seconds_until_next:.0f} seconds)")
-            
-            # Sleep until next run time
-            if seconds_until_next > 0:
-                await asyncio.sleep(seconds_until_next)
-            
-            # Run the scheduled task
-            print(f"Running scheduled task at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
-            await manager.run_optimized_cycle()
-    else:
-        # Single run mode
+    async def run_selected_mode():
+        """Run the selected mode based on args.mode"""
         if args.mode == "optimized":
             await manager.run_optimized_cycle()
         elif args.mode == "upload":
@@ -2424,6 +2390,45 @@ async def main():
             if files:
                 # Use the old sequential processing (not recommended)
                 print("Processing files sequentially...")
+    
+    # Run based on mode
+    if args.schedule:
+        # Scheduled mode
+        print(f"Starting scheduled mode: {args.schedule}")
+        print(f"Mode: {args.mode} (will run on schedule)")
+        
+        # Parse cron expression
+        import croniter
+        from datetime import datetime
+        
+        # Create cron iterator
+        cron = croniter.croniter(args.schedule, datetime.now())
+        
+        # Run initial cycle
+        print("Running initial cycle...")
+        await run_selected_mode()
+        
+        # Keep running with scheduled tasks
+        while True:
+            # Get next run time
+            next_run = cron.get_next(datetime)
+            now = datetime.now()
+            
+            # Calculate seconds until next run
+            seconds_until_next = (next_run - now).total_seconds()
+            
+            print(f"Next scheduled run: {next_run.strftime('%Y-%m-%d %H:%M:%S')} (in {seconds_until_next:.0f} seconds)")
+            
+            # Sleep until next run time
+            if seconds_until_next > 0:
+                await asyncio.sleep(seconds_until_next)
+            
+            # Run the scheduled task
+            print(f"Running scheduled task at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
+            await run_selected_mode()
+    else:
+        # Single run mode
+        await run_selected_mode()
         
         if args.benchmark:
             print("\nPerformance benchmark completed!")
