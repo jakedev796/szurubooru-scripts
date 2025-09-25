@@ -356,6 +356,86 @@ class SzurubooruAPI:
                     
         except Exception:
             return False
+    
+    async def create_tag_with_category(self, tag_name: str, category: str = "default") -> bool:
+        """Create a tag with a specific category"""
+        try:
+            data = {
+                "names": [tag_name],
+                "category": category
+            }
+            
+            async with self.session.post(
+                f"{self.config.szurubooru_url}/api/tags",
+                json=data
+            ) as response:
+                if response.status == 200:
+                    return True
+                elif response.status == 409:  # Tag already exists
+                    # Try to update the existing tag's category
+                    return await self.update_tag_category(tag_name, category)
+                else:
+                    error_text = await response.text()
+                    logger.warning(f"Failed to create tag {tag_name} with category {category}: {error_text}")
+                    return False
+                    
+        except Exception as e:
+            logger.warning(f"Exception creating tag {tag_name} with category {category}: {e}")
+            return False
+    
+    async def update_tag_category(self, tag_name: str, category: str) -> bool:
+        """Update an existing tag's category"""
+        try:
+            # First get the current tag to get its version
+            async with self.session.get(
+                f"{self.config.szurubooru_url}/api/tag/{tag_name}"
+            ) as response:
+                if response.status != 200:
+                    return False
+                
+                tag_data = await response.json()
+                version = tag_data.get('version', 1)
+            
+            # Update the tag with the new category
+            data = {
+                "version": version,
+                "category": category
+            }
+            
+            async with self.session.put(
+                f"{self.config.szurubooru_url}/api/tag/{tag_name}",
+                json=data
+            ) as response:
+                return response.status == 200
+                
+        except Exception as e:
+            logger.warning(f"Exception updating tag {tag_name} category to {category}: {e}")
+            return False
+
+    def determine_tag_category(self, tag_name: str) -> str:
+        """Determine the appropriate category for a tag based on its name and context"""
+        tag_lower = tag_name.lower()
+        
+        # Meta tags
+        meta_tags = {
+            'tagme', 'video', 'animated', 'animation', 'gif', 'webm', 'mp4', 
+            'image', 'photo', 'screenshot', 'artwork', 'fanart', 'original',
+            'translated', 'translation', 'english', 'japanese', 'chinese',
+            'colored', 'black_and_white', 'monochrome', 'colorized',
+            'high_res', 'low_res', 'hd', '4k', '1080p', '720p',
+            'nsfw', 'sfw', 'safe', 'unsafe', 'sketchy',
+            'meme', 'shitpost', 'quality', 'best', 'worst'
+        }
+        
+        if tag_lower in meta_tags:
+            return "meta"
+        
+        # Character tags - these are typically detected by WD14 Tagger
+        # We'll assume character tags are passed in a specific context
+        # This will be handled in the calling code
+        
+        # Default for everything else
+        return "default"
 
 class WDTaggerManager:
     """Manager for WD14 Tagger operations with GPU batch processing"""
@@ -400,26 +480,30 @@ class WDTaggerManager:
                 if not self.is_initialized:
                     await asyncio.get_event_loop().run_in_executor(None, self.initialize)
     
-    def _process_result(self, result) -> Tuple[List[str], str]:
-        """Process a single tagger result"""
-        # Extract tags from both general_tag_data and character_tag_data
-        tags = []
+    def _process_result(self, result) -> Tuple[List[str], List[str], str]:
+        """Process a single tagger result. Returns (general_tags, character_tags, safety)"""
+        general_tags = []
+        character_tags = []
         
         # Process general tags
         if hasattr(result, 'general_tag_data') and result.general_tag_data:
             for tag, confidence in result.general_tag_data.items():
-                if confidence >= self.config.confidence_threshold and len(tags) < self.config.max_tags_per_image:
-                    tags.append(tag)
+                if confidence >= self.config.confidence_threshold and len(general_tags) < self.config.max_tags_per_image:
+                    # Clean the tag
+                    import re
+                    clean_tag = re.sub(r'\s*\([\d.]+\)$', '', str(tag)).strip()
+                    if clean_tag and len(clean_tag) > 1:
+                        general_tags.append(clean_tag)
         
-        # Process character tags (often more important, so add them first)
-        character_tags = []
+        # Process character tags
         if hasattr(result, 'character_tag_data') and result.character_tag_data:
             for tag, confidence in result.character_tag_data.items():
                 if confidence >= self.config.confidence_threshold:
-                    character_tags.append(tag)
-        
-        # Add character tags to the beginning of the list (they're usually more important)
-        tags = character_tags + tags
+                    # Clean the tag
+                    import re
+                    clean_tag = re.sub(r'\s*\([\d.]+\)$', '', str(tag)).strip()
+                    if clean_tag and len(clean_tag) > 1:
+                        character_tags.append(clean_tag)
         
         # Extract safety rating
         safety = "unsafe"  # Default safety
@@ -446,16 +530,7 @@ class WDTaggerManager:
             else:  # general
                 safety = "safe"
         
-        # Filter and clean tags
-        cleaned_tags = []
-        for tag in tags:
-            # Only remove confidence values if present (e.g., "tag (0.95)" -> "tag")
-            import re
-            clean_tag = re.sub(r'\s*\([\d.]+\)$', '', str(tag)).strip()
-            if clean_tag and len(clean_tag) > 1:
-                cleaned_tags.append(clean_tag)
-        
-        return cleaned_tags, safety
+        return general_tags, character_tags, safety
     
     def _extract_character_tags_only(self, result) -> List[str]:
         """Extract only character tags from WD14 tagger result"""
@@ -473,8 +548,8 @@ class WDTaggerManager:
         
         return character_tags
     
-    async def tag_image(self, image_path: Path) -> Tuple[List[str], str]:
-        """Tag a single image using WD14 Tagger. Returns (tags, safety)"""
+    async def tag_image(self, image_path: Path) -> Tuple[List[str], List[str], str]:
+        """Tag a single image using WD14 Tagger. Returns (general_tags, character_tags, safety)"""
         await self.ensure_initialized()
         
         try:
@@ -492,9 +567,9 @@ class WDTaggerManager:
             
         except Exception as e:
             logger.warning(f"Failed to tag image {image_path}: {e}")
-            return [], "safe"
+            return [], [], "safe"
     
-    async def tag_images_batch(self, image_paths: List[Path]) -> List[Tuple[List[str], str]]:
+    async def tag_images_batch(self, image_paths: List[Path]) -> List[Tuple[List[str], List[str], str]]:
         """Tag multiple images in batches for GPU efficiency"""
         await self.ensure_initialized()
         
@@ -528,13 +603,13 @@ class WDTaggerManager:
                 # Process results
                 for j, result in enumerate(batch_results):
                     if isinstance(result, Exception) or result is None:
-                        results.append(([], "safe"))
+                        results.append(([], [], "safe"))
                     else:
                         try:
                             processed_result = self._process_result(result)
                             results.append(processed_result)
                         except Exception:
-                            results.append(([], "safe"))
+                            results.append(([], [], "safe"))
                 
                 # Small delay between batches to prevent overwhelming GPU
                 if i + batch_size < len(image_paths):
@@ -543,7 +618,7 @@ class WDTaggerManager:
         except Exception as e:
             logger.error(f"Error in batch tagging: {e}")
             # Return empty results for all images
-            results = [([], "safe") for _ in image_paths]
+            results = [([], [], "safe") for _ in image_paths]
         
         return results
 
@@ -814,6 +889,11 @@ class MediaManager:
                         # For images, add tagme tag for AI processing
                         initial_tags = [self.config.tagme_tag]
                     
+                    # Ensure initial tags exist with proper categories
+                    for tag in initial_tags:
+                        if tag == self.config.video_tag or tag == self.config.tagme_tag:
+                            await api.create_tag_with_category(tag, "meta")
+                    
                     # Upload with appropriate initial tags
                     result = await api.upload_post(file_path, tags=initial_tags, safety="unsafe")
                     
@@ -998,8 +1078,8 @@ class MediaManager:
         
         return processed_results
     
-    async def update_post_tags_batch(self, posts_data: List[Tuple[Path, Dict]], tag_results: List[Tuple[List[str], str]]):
-        """Update tags for multiple posts concurrently"""
+    async def update_post_tags_batch(self, posts_data: List[Tuple[Path, Dict]], tag_results: List[Tuple[List[str], List[str], str]]):
+        """Update tags for multiple posts concurrently with category assignment"""
         if not posts_data or not tag_results:
             return
         
@@ -1008,9 +1088,9 @@ class MediaManager:
         # Create update tasks
         tasks = []
         
-        for (file_path, post_data), (new_tags, safety) in zip(posts_data, tag_results):
+        for (file_path, post_data), (general_tags, character_tags, safety) in zip(posts_data, tag_results):
             if post_data:  # Update post even if no AI tags (to remove 'tagme')
-                task = self._update_single_post_tags(post_data, new_tags, safety)
+                task = self._update_single_post_tags_with_categories(post_data, general_tags, character_tags, safety)
                 tasks.append(task)
         
         # Execute all updates concurrently
@@ -1022,8 +1102,90 @@ class MediaManager:
         
         print(f"Successfully updated {successful_updates}/{len(posts_data)} posts")
     
+    async def _update_single_post_tags_with_categories(self, post_data: Dict, general_tags: List[str], character_tags: List[str], safety: str) -> bool:
+        """Update tags for a single post with category assignment"""
+        try:
+            post_id = post_data.get('id')
+            version = post_data.get('version', 1)
+            
+            if not post_id:
+                logger.warning(f"No post ID found in post data")
+                return False
+            
+            # Get current tags and remove 'tagme' tag
+            current_tags = [tag['names'][0] for tag in post_data.get('tags', [])]
+            original_tag_count = len(current_tags)
+            
+            if self.config.tagme_tag in current_tags:
+                current_tags.remove(self.config.tagme_tag)
+            
+            # Combine all tags
+            all_tags = list(set(current_tags + (general_tags or []) + (character_tags or [])))
+            
+            # Debug logging
+            logger.info(f"Post {post_id}: {original_tag_count} original tags -> {len(all_tags)} final tags (added {len(general_tags or [])} general + {len(character_tags or [])} character AI tags)")
+            
+            # Prepare update data
+            update_data = {
+                'version': version,
+                'tags': all_tags
+            }
+            
+            # Add safety if different from default
+            if safety != "unsafe":
+                update_data['safety'] = safety
+            
+            # Create dedicated API connection for update
+            async with SzurubooruAPI(self.config) as api:
+                # First, ensure all tags exist with proper categories
+                await self._ensure_tags_with_categories(api, general_tags, character_tags)
+                
+                # Then update the post
+                async with api.session.put(
+                    f"{self.config.szurubooru_url}/api/post/{post_id}",
+                    json=update_data
+                ) as response:
+                    if response.status == 200:
+                        return True
+                    elif response.status == 409:  # Version conflict
+                        # Retry with incremented version
+                        update_data['version'] = version + 1
+                        async with api.session.put(
+                            f"{self.config.szurubooru_url}/api/post/{post_id}",
+                            json=update_data
+                        ) as retry_response:
+                            success = retry_response.status == 200
+                            if not success:
+                                error_text = await retry_response.text()
+                                logger.warning(f"Post {post_id} update retry failed: {error_text}")
+                            return success
+                    else:
+                        error_text = await response.text()
+                        logger.warning(f"Post {post_id} update failed with status {response.status}: {error_text}")
+                        return False
+        
+        except Exception as e:
+            logger.warning(f"Failed to update post {post_data.get('id', 'unknown')}: {e}")
+            return False
+    
+    async def _ensure_tags_with_categories(self, api, general_tags: List[str], character_tags: List[str]):
+        """Ensure all tags exist with proper categories"""
+        try:
+            # Create general tags with 'default' category
+            for tag in general_tags or []:
+                if tag and tag.strip():
+                    await api.create_tag_with_category(tag.strip(), "default")
+            
+            # Create character tags with 'character' category
+            for tag in character_tags or []:
+                if tag and tag.strip():
+                    await api.create_tag_with_category(tag.strip(), "character")
+                    
+        except Exception as e:
+            logger.warning(f"Error ensuring tags with categories: {e}")
+    
     async def _update_single_post_tags(self, post_data: Dict, new_tags: List[str], safety: str) -> bool:
-        """Update tags for a single post"""
+        """Update tags for a single post (legacy method for backward compatibility)"""
         try:
             post_id = post_data.get('id')
             version = post_data.get('version', 1)
@@ -1239,8 +1401,9 @@ class MediaManager:
                 
                 # Debug: Check tag results
                 if tag_results:
-                    non_empty_tags = len([tags for tags, _ in tag_results if tags])
-                    print(f"AI tagging results: {non_empty_tags}/{len(tag_results)} files got tags")
+                    non_empty_general = len([general for general, _, _ in tag_results if general])
+                    non_empty_character = len([character for _, character, _ in tag_results if character])
+                    print(f"AI tagging results: {non_empty_general}/{len(tag_results)} files got general tags, {non_empty_character}/{len(tag_results)} files got character tags")
                 
                 # Update posts with tags (match files to posts)
                 if tag_results:
@@ -1469,6 +1632,9 @@ class MediaManager:
                 if self.config.video_tag not in current_tags:
                     current_tags.append(self.config.video_tag)
                     
+                    # Ensure video tag exists with meta category
+                    await api.create_tag_with_category(self.config.video_tag, "meta")
+                    
                     # Update post with video tag
                     update_data = {
                         'version': version,
@@ -1524,10 +1690,21 @@ class MediaManager:
                         return False
                 
                 # Tag the image
-                new_tags, safety = await self.wd_tagger.tag_image(temp_path)
+                general_tags, character_tags, safety = await self.wd_tagger.tag_image(temp_path)
                 
                 # Combine existing tags with new tags
-                all_tags = list(set(current_tags + new_tags))
+                all_tags = list(set(current_tags + (general_tags or []) + (character_tags or [])))
+                
+                # Ensure tags exist with proper categories
+                # Create general tags with 'default' category
+                for tag in general_tags or []:
+                    if tag and tag.strip():
+                        await api.create_tag_with_category(tag.strip(), "default")
+                
+                # Create character tags with 'character' category
+                for tag in character_tags or []:
+                    if tag and tag.strip():
+                        await api.create_tag_with_category(tag.strip(), "character")
                 
                 # Update both tags and safety in a single request
                 update_data = {
@@ -1600,6 +1777,9 @@ class MediaManager:
                             # Check if it's a video
                             if post_type in ['video', 'animation']:
                                 # Add video tag to untagged videos
+                                # Ensure video tag exists with meta category
+                                await api.create_tag_with_category(self.config.video_tag, "meta")
+                                
                                 update_data = {
                                     'version': version,
                                     'tags': [self.config.video_tag]
@@ -1648,10 +1828,21 @@ class MediaManager:
                                         continue
                                 
                                 # Tag the image
-                                new_tags, safety = await self.wd_tagger.tag_image(temp_path)
+                                general_tags, character_tags, safety = await self.wd_tagger.tag_image(temp_path)
                                 
                                 # Combine existing tags with new tags
-                                all_tags = list(set(current_tags + new_tags))
+                                all_tags = list(set(current_tags + (general_tags or []) + (character_tags or [])))
+                                
+                                # Ensure tags exist with proper categories
+                                # Create general tags with 'default' category
+                                for tag in general_tags or []:
+                                    if tag and tag.strip():
+                                        await api.create_tag_with_category(tag.strip(), "default")
+                                
+                                # Create character tags with 'character' category
+                                for tag in character_tags or []:
+                                    if tag and tag.strip():
+                                        await api.create_tag_with_category(tag.strip(), "character")
                                 
                                 # Update both tags and safety in a single request
                                 update_data = {
@@ -1952,6 +2143,11 @@ class MediaManager:
                 
                 # Extract only character tags
                 new_character_tags = self.wd_tagger._extract_character_tags_only(tagger_result)
+                
+                # Ensure character tags exist with proper category
+                for tag in new_character_tags:
+                    if tag and tag.strip():
+                        await api.create_tag_with_category(tag.strip(), "character")
                 
                 if new_character_tags:
                     # Check which character tags are actually new

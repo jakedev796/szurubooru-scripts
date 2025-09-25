@@ -8,3 +8,4 @@ temp_*.*
 __pycache__/
 *.pyc
 *.pyo
+tag_sync_manager.log
