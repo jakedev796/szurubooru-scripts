@@ -38,6 +38,9 @@ pip install -r requirements.txt
 
 # For maximum GPU performance (recommended)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# If you encounter PyTorch/transformers compatibility issues, try:
+# pip install torch==1.13.1 torchvision==0.14.1 --index-url https://download.pytorch.org/whl/cu118
 ```
 
 ### Quick Start

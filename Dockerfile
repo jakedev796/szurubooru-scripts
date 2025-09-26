@@ -1,5 +1,5 @@
 # Use CUDA-enabled PyTorch base image for GPU support (uncomment if you have NVIDIA GPU)
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:1.13.1-cuda11.6-cudnn8-runtime
 
 # Set working directory
 WORKDIR /app
