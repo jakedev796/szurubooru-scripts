@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     git \
     wget \
     curl \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -17,8 +18,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the script and configuration
+# Copy the application files
 COPY szurubooru_manager.py .
+COPY components/ ./components/
 COPY config.json .
 COPY docker-entrypoint.sh .
 

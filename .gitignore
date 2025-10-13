@@ -3,7 +3,6 @@ szurubooru-api.md
 /uploads
 /logs
 szurubooru_manager.log
-processed_files.txt
 temp_*.*
 __pycache__/
 *.pyc

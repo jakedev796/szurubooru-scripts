@@ -14,8 +14,9 @@ services:
       - ./logs:/app/logs
       # Mount config file for easy updates
       - ./config.json:/app/config.json:ro
-      # Optional: mount processed files tracking
-      - ./processed_files.json:/app/processed_files.json
+      # Processed files tracking (optional - comment out if not needed)
+      # Note: Create ./processed_files.txt as an empty file first with: touch processed_files.txt
+      # - ./processed_files.txt:/app/processed_files.txt
     
     # Environment variables (can override config.json)
     environment:

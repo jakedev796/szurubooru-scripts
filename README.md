@@ -1,4 +1,4 @@
-# Szurubooru High-Performance Media Manager v2.0
+# Szurubooru High-Performance Media Manager v3.0
 
 A Python script for automating media upload and AI auto-tagging for Szurubooru image boards.
 

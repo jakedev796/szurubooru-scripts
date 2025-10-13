@@ -1,55 +1,55 @@
-# Git
-.git
-.gitignore
-
-# Python
-__pycache__
-*.pyc
-*.pyo
-*.pyd
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 .Python
-env
-pip-log.txt
-pip-delete-this-directory.txt
-.tox
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesis
 
-# Logs
-logs/
-*.log
-szurubooru_manager.log
+# Virtual environments
+venv/
+env/
+ENV/
 
-# Uploads (will be mounted as volume)
-uploads/
-
-# Config examples
-config.example.json
-
-# Documentation
-README.md
-szurubooru-api.md
-
-# IDE
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS
+# Git
+.git/
+.gitignore
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Docker files (don't need these in the image)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+*.md
+docs/
+
+# Test files
+test_*.py
+*_test.py
+tests/
+
+# OS files
 .DS_Store
 Thumbs.db
 
-# Temporary files
-temp_*
+# Local data that shouldn't be in image
+uploads/*
+logs/*
 processed_files.txt
 processed_files.json
+
+# Temporary files
+temp_*
+*.tmp
