@@ -42,5 +42,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Set entrypoint
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
-# Default command - run in scheduled mode with optimized mode
-CMD ["python", "szurubooru_manager.py", "--mode", "optimized", "--schedule", "*/30 * * * *"]
+# Default command - can be overridden by environment variables
+CMD ["/app/docker-entrypoint.sh"]

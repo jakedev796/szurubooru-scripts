@@ -70,6 +70,34 @@ docker-compose -f docker-compose.cpu.yml up -d
 docker-compose -f docker-compose.cpu.yml logs -f
 ```
 
+### Docker Configuration
+
+You can customize the container behavior using environment variables in your docker-compose file:
+
+```yaml
+environment:
+  - MODE=optimized                    # Mode: optimized, upload, tag, untagged, add-characters
+  - SCHEDULE_ENABLED=true             # Enable/disable scheduling: true, false
+  - SCHEDULE_TIME=*/30 * * * *        # Cron schedule (every 30 minutes)
+```
+
+**Examples:**
+```yaml
+# Run once in upload mode (no scheduling)
+- MODE=upload
+- SCHEDULE_ENABLED=false
+
+# Run every hour in tag mode
+- MODE=tag
+- SCHEDULE_ENABLED=true
+- SCHEDULE_TIME=0 * * * *
+
+# Run daily at 2 AM in optimized mode
+- MODE=optimized
+- SCHEDULE_ENABLED=true
+- SCHEDULE_TIME=0 2 * * *
+```
+
 ## Operation Modes
 
 ### **optimized** (Default)

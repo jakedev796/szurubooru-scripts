@@ -26,10 +26,14 @@ services:
       # Optional: mount processed files tracking
       - ./processed_files.json:/app/processed_files.json
     
-    # Environment variables (can override config.yaml)
+    # Environment variables (can override config.json)
     environment:
       - PYTHONUNBUFFERED=1
       - TZ=UTC
+      # Runtime configuration
+      - MODE=optimized                    # Mode: optimized, upload, tag, untagged, add-characters
+      - SCHEDULE_ENABLED=true             # Enable/disable scheduling: true, false
+      - SCHEDULE_TIME=*/30 * * * *        # Cron schedule (every 30 minutes)
       # Override config values if needed
       # - SZURUBOORU_URL=http://your-szurubooru-instance:8080
       # - USERNAME=your-username

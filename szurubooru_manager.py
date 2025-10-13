@@ -80,7 +80,7 @@ class Config:
     upload_timeout: float = 30.0
     tagging_timeout: float = 60.0
     # Batched file discovery settings
-    batch_discovery_size: int = 1000
+    batch_discovery_size: int = 1000  # For file scanning; API calls are clamped to 100
     skip_processed_files: bool = True
     # Debug settings
     debug_api_errors: bool = False
@@ -288,9 +288,16 @@ class SzurubooruAPI:
                     result = await response.json()
                     return result.get('results', [])
                 else:
+                    text = await response.text()
+                    error_msg = f"Failed to get all posts (offset={offset}, limit={limit}): HTTP {response.status} - {text}"
+                    logger.error(error_msg)
+                    print(f"⚠️  {error_msg}")
                     return []
                     
-        except Exception:
+        except Exception as e:
+            error_msg = f"Exception in get_all_posts(offset={offset}, limit={limit}): {e}"
+            logger.error(error_msg)
+            print(f"⚠️  {error_msg}")
             return []
     
     async def get_posts_by_id_range(self, start_id: int, end_id: int, limit: int = 100, offset: int = 0) -> List[Dict]:
@@ -310,10 +317,42 @@ class SzurubooruAPI:
                     result = await response.json()
                     return result.get('results', [])
                 else:
+                    text = await response.text()
+                    error_msg = f"Failed to get posts by ID range {start_id}..{end_id} (offset={offset}): HTTP {response.status} - {text}"
+                    logger.error(error_msg)
+                    print(f"⚠️  {error_msg}")
                     return []
                     
-        except Exception:
+        except Exception as e:
+            error_msg = f"Exception in get_posts_by_id_range({start_id}..{end_id}, offset={offset}): {e}"
+            logger.error(error_msg)
+            print(f"⚠️  {error_msg}")
             return []
+    
+    async def get_post_count_in_range(self, start_id: int, end_id: int) -> int:
+        """Get the actual count of posts within a specific ID range"""
+        try:
+            params = {
+                'query': f'id:{start_id}..{end_id}',
+                'limit': 1,
+                'offset': 0
+            }
+            
+            async with self.session.get(
+                f"{self.config.szurubooru_url}/api/posts/",
+                params=params
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get('total', 0)
+                else:
+                    text = await response.text()
+                    logger.error(f"Failed to get post count in range {start_id}..{end_id}: HTTP {response.status} - {text}")
+                    return 0
+                    
+        except Exception as e:
+            logger.error(f"Exception in get_post_count_in_range({start_id}..{end_id}): {e}")
+            return 0
     
     async def get_total_post_count(self) -> int:
         """Get total number of posts in the instance"""
@@ -1925,29 +1964,40 @@ class MediaManager:
                     print("No posts found in the instance")
                     return 0
                 
-                # Determine range
-                if start_post_id is None:
-                    start_post_id = 1
-                if end_post_id is None:
-                    end_post_id = total_posts
+                # Determine if using ID range query or processing all posts
+                use_id_range = start_post_id is not None or end_post_id is not None
                 
-                # Validate range
-                if start_post_id < 1:
-                    print(f"Invalid start_post_id: {start_post_id}. Must be >= 1")
-                    return 0
-                if end_post_id > total_posts:
-                    print(f"Invalid end_post_id: {end_post_id}. Total posts available: {total_posts}")
-                    return 0
-                if start_post_id > end_post_id:
-                    print(f"Invalid range: start_post_id ({start_post_id}) > end_post_id ({end_post_id})")
-                    return 0
+                # Set defaults for display/validation
+                display_start = start_post_id if start_post_id is not None else 1
+                display_end = end_post_id if end_post_id is not None else total_posts
                 
-                posts_to_process = end_post_id - start_post_id + 1
-                
-                if start_post_id == 1 and end_post_id == total_posts:
-                    print(f"🎯 Starting character tag addition for ALL {total_posts:,} posts")
-                else:
+                # Validate range if specified
+                if use_id_range:
+                    if start_post_id is not None and start_post_id < 1:
+                        print(f"Invalid start_post_id: {start_post_id}. Must be >= 1")
+                        return 0
+                    if start_post_id is not None and end_post_id is not None and end_post_id < start_post_id:
+                        print(f"Invalid range: start_post_id ({start_post_id}) > end_post_id ({end_post_id})")
+                        return 0
+                    
+                    # Set final range values
+                    if start_post_id is None:
+                        start_post_id = 1
+                    if end_post_id is None:
+                        end_post_id = total_posts
+                    
+                    # Get actual count of posts in the ID range (handles gaps from deleted posts)
+                    posts_to_process = await api.get_post_count_in_range(start_post_id, end_post_id)
+                    
+                    if posts_to_process == 0:
+                        print(f"No posts found in ID range {start_post_id}..{end_post_id}")
+                        return 0
+                    
                     print(f"🎯 Starting character tag addition for posts {start_post_id:,} to {end_post_id:,} ({posts_to_process:,} posts)")
+                else:
+                    posts_to_process = total_posts
+                    print(f"🎯 Starting character tag addition for ALL {total_posts:,} posts")
+                
                 print("📝 This will ONLY add character tags, leaving all existing tags intact")
                 print("=" * 70)
                 
@@ -1962,12 +2012,17 @@ class MediaManager:
                 }
                 
                 # Batch processing settings - use configured batch size
-                batch_size = self.config.batch_discovery_size or 100  # Use config or default to 100
+                # Note: Szurubooru API has a hard limit of 100 posts per request
+                configured_batch_size = self.config.batch_discovery_size or 100
+                batch_size = min(configured_batch_size, 100)  # Clamp to API maximum
+                
+                if configured_batch_size > 100:
+                    logger.warning(f"batch_discovery_size ({configured_batch_size}) exceeds API limit of 100, clamping to maximum")
                 
                 # Create overall progress bar
                 with tqdm(total=posts_to_process, desc="Processing posts", unit="post") as overall_pbar:
                     
-                    if start_post_id is not None and end_post_id is not None:
+                    if use_id_range:
                         # Use efficient ID range query when range is specified
                         print(f"🎯 Using efficient ID range query: id:{start_post_id}..{end_post_id}")
                         

@@ -27,5 +27,25 @@ echo "📋 Configuration: /app/config.json"
 echo "📁 Uploads: /app/uploads"
 echo "📝 Logs: /app/logs"
 
-# Execute the main command
-exec "$@"
+# Set default values for environment variables
+MODE=${MODE:-"optimized"}
+SCHEDULE_ENABLED=${SCHEDULE_ENABLED:-"true"}
+SCHEDULE_TIME=${SCHEDULE_TIME:-"*/30 * * * *"}
+
+echo "🔧 Mode: $MODE"
+echo "⏰ Schedule enabled: $SCHEDULE_ENABLED"
+if [ "$SCHEDULE_ENABLED" = "true" ]; then
+    echo "⏰ Schedule time: $SCHEDULE_TIME"
+fi
+
+# Build the command based on environment variables
+CMD_ARGS="--mode $MODE"
+
+if [ "$SCHEDULE_ENABLED" = "true" ]; then
+    CMD_ARGS="$CMD_ARGS --schedule \"$SCHEDULE_TIME\""
+fi
+
+echo "🚀 Starting with command: python szurubooru_manager.py $CMD_ARGS"
+
+# Execute the command
+exec python szurubooru_manager.py $CMD_ARGS
