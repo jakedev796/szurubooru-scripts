@@ -32,7 +32,7 @@ RESET = '\033[0m'
 
 
 class MediaManager:
-    """High-performance media management class with parallel processing"""
+    """Media management class with parallel processing"""
     
     def __init__(self, config):
         self.config = config

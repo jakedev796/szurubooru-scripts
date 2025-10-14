@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 async def main():
     """Main function with optimized processing modes"""
-    parser = argparse.ArgumentParser(description="Szurubooru High-Performance Media Manager")
+    parser = argparse.ArgumentParser(description="Szurubooru Media Manager")
     parser.add_argument("--config", "-c", default="config.json", help="Configuration file path")
     parser.add_argument("--mode", "-m", 
                        choices=["optimized", "upload", "tag", "untagged", "add-characters", "full", "legacy"], 
@@ -60,7 +60,7 @@ async def main():
     args = parser.parse_args()
     
     # Print header
-    print("Szurubooru High-Performance Media Manager v2.0")
+    print("Szurubooru Media Manager v3.0")
     print("="*60)
     
     # Show python-magic status

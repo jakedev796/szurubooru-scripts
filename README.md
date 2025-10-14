@@ -1,4 +1,4 @@
-# Szurubooru High-Performance Media Manager v3.0
+# Szurubooru Media Manager v3.0
 
 A Python script for automating media upload and AI auto-tagging for Szurubooru image boards.
 
@@ -298,6 +298,11 @@ python -c "import torch; print(torch.cuda.is_available())"
 - **File Permissions**: Restrict config file access (`chmod 600 config.json`)
 - **Network Security**: Use VPN for remote servers
 - **Regular Updates**: Keep dependencies current
+
+
+## What's New in v3.0
+
+[Read this commit for the full details.](https://github.com/jakedev796/szurubooru-scripts/commit/cc302b226c18713e3bc261925477568192547b75)
 
 ## What's New in v2.0
 
