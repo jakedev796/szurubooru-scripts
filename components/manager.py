@@ -190,34 +190,32 @@ class MediaManager:
         loop = asyncio.get_event_loop()
         
         def scan_batch():
+            from .utils import is_image_file, is_video_file
+            
             found_files = []
             total_scanned = 0
             
-            for ext in self.config.supported_extensions:
+            # Scan all files recursively
+            for file_path in upload_path.rglob('*'):
+                # Skip directories
+                if not file_path.is_file():
+                    continue
+                
+                total_scanned += 1
+                
+                # Skip if already processed
+                if self._is_file_processed(file_path):
+                    continue
+                
+                # Use python-magic to detect actual media files
+                if not (is_image_file(file_path) or is_video_file(file_path)):
+                    continue
+                
+                found_files.append(file_path)
+                
+                # Stop when we hit batch limit
                 if len(found_files) >= batch_size:
                     break
-                    
-                # Scan for both lowercase and uppercase extensions
-                for pattern in [f"*.{ext.lower()}", f"*.{ext.upper()}"]:
-                    for file_path in upload_path.rglob(pattern):
-                        total_scanned += 1
-                        
-                        # Skip if already processed
-                        if self._is_file_processed(file_path):
-                            continue
-                            
-                        # Skip if file doesn't exist
-                        if not file_path.exists():
-                            continue
-                            
-                        found_files.append(file_path)
-                        
-                        # Stop when we hit batch limit
-                        if len(found_files) >= batch_size:
-                            break
-                    
-                    if len(found_files) >= batch_size:
-                        break
             
             # Sort by modification time (newest first)
             found_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -240,17 +238,22 @@ class MediaManager:
         loop = asyncio.get_event_loop()
         
         def scan_files():
-            files = []
-            for ext in self.config.supported_extensions:
-                # Use case-insensitive pattern to scan recursively
-                pattern_lower = f"*.{ext.lower()}"
-                pattern_upper = f"*.{ext.upper()}"
-                files.extend(upload_path.rglob(pattern_lower))
-                files.extend(upload_path.rglob(pattern_upper))
+            from .utils import is_image_file, is_video_file
             
-            # Remove duplicates and sort by modification time (newest first)
-            unique_files = list(set(files))
-            return sorted(unique_files, key=lambda f: f.stat().st_mtime, reverse=True)
+            files = []
+            
+            # Scan all files recursively
+            for file_path in upload_path.rglob('*'):
+                # Skip directories
+                if not file_path.is_file():
+                    continue
+                
+                # Use python-magic to detect actual media files (more robust than extension matching)
+                if is_image_file(file_path) or is_video_file(file_path):
+                    files.append(file_path)
+            
+            # Sort by modification time (newest first)
+            return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)
         
         files = await loop.run_in_executor(None, scan_files)
         return files
@@ -392,6 +395,13 @@ class MediaManager:
         """Upload multiple files in parallel with optimized performance"""
         if not files:
             return []
+        
+        # Deduplicate file list (safety check)
+        unique_check = set(files)
+        if len(unique_check) != len(files):
+            duplicates_found = len(files) - len(unique_check)
+            logger.warning(f"Found {duplicates_found} duplicate file paths in batch - deduplicating")
+            files = list(unique_check)
         
         print(f"Starting parallel upload of {len(files)} files...")
         
