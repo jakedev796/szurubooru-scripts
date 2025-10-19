@@ -1,8 +1,6 @@
 config.json
 szurubooru-api.md
 /uploads
-/logs
-szurubooru_manager.log
 temp_*.*
 __pycache__/
 *.pyc
