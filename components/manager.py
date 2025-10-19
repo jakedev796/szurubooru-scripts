@@ -39,6 +39,8 @@ class MediaManager:
         self.wd_tagger = WDTaggerManager(config)
         self.metrics = PerformanceMetrics()
         self.upload_semaphore = asyncio.Semaphore(config.max_concurrent_uploads)
+        # Track files currently being uploaded to prevent duplicates
+        self._uploading_files = set()
         
         # Pre-initialize tagger for better performance
         if WD14_AVAILABLE and config.gpu_enabled:
@@ -55,6 +57,14 @@ class MediaManager:
         else:
             self.processed_files_log = None
             self._processed_files_cache = set()
+            # Clear any existing processed files cache when tracking is disabled
+            try:
+                processed_files_path = Path("processed_files.txt")
+                if processed_files_path.exists():
+                    processed_files_path.unlink()
+                    logger.info("Cleared processed files cache (tracking disabled)")
+            except Exception as e:
+                logger.warning(f"Failed to clear processed files cache: {e}")
     
     def _load_processed_files_cache(self):
         """Load processed files from log into memory cache"""
@@ -71,14 +81,18 @@ class MediaManager:
         if self.config.track_processed_files and self.config.skip_processed_files:
             file_str = str(file_path.resolve())
             if file_str not in self._processed_files_cache:
+                logger.debug(f"[MARK PROCESSED] {file_path.name} - Adding to processed cache")
                 self._processed_files_cache.add(file_str)
                 # Append to log file
                 try:
                     if self.processed_files_log:
                         with open(self.processed_files_log, 'a', encoding='utf-8') as f:
                             f.write(f"{file_str}\n")
+                        logger.debug(f"[MARK PROCESSED] {file_path.name} - Written to processed files log")
                 except Exception as e:
                     logger.warning(f"Failed to log processed file: {e}")
+            else:
+                logger.debug(f"[MARK PROCESSED] {file_path.name} - Already in processed cache")
     
     async def _upload_with_content_type(self, api, file_path: Path, tags: List[str], content_type: str) -> Optional[Dict]:
         """Upload a file with explicit content type"""
@@ -205,12 +219,14 @@ class MediaManager:
                 
                 # Skip if already processed
                 if self._is_file_processed(file_path):
+                    logger.debug(f"[SCAN SKIP] {file_path.name} - Already processed")
                     continue
                 
                 # Use python-magic to detect actual media files
                 if not (is_image_file(file_path) or is_video_file(file_path)):
                     continue
                 
+                logger.debug(f"[SCAN FOUND] {file_path.name} - Adding to batch")
                 found_files.append(file_path)
                 
                 # Stop when we hit batch limit
@@ -222,6 +238,20 @@ class MediaManager:
             return found_files, total_scanned
         
         files, scanned_count = await loop.run_in_executor(None, scan_batch)
+        
+        # Check for duplicate file paths in the discovered batch
+        unique_files = list(set(files))
+        if len(unique_files) != len(files):
+            duplicates_found = len(files) - len(unique_files)
+            logger.warning(f"[SCAN ERROR] Found {duplicates_found} duplicate file paths in discovered batch!")
+            logger.warning(f"[SCAN ERROR] Original count: {len(files)}, Unique count: {len(unique_files)}")
+            # Log the duplicate files
+            seen = set()
+            for f in files:
+                if f in seen:
+                    logger.warning(f"[SCAN ERROR] Duplicate file: {f.name}")
+                seen.add(f)
+            files = unique_files
         
         print(f"Discovered batch: {len(files)} new files (scanned {scanned_count} total)")
         return files
@@ -260,10 +290,23 @@ class MediaManager:
     
     async def upload_single_file_optimized(self, file_path: Path) -> Tuple[bool, str, Optional[Dict]]:
         """Optimized upload with dedicated connection. Returns (success, reason, post_data)"""
+        # Check if file is already being uploaded (prevent duplicates)
+        file_key = str(file_path.resolve())
+        if file_key in self._uploading_files:
+            logger.warning(f"[UPLOAD DUPLICATE] {file_path.name} - File already being uploaded, skipping")
+            return False, "File already being uploaded", None
+        
+        # Add diagnostic logging to track upload attempts
+        logger.debug(f"[UPLOAD START] {file_path.name} - Semaphore acquired")
+        
         async with self.upload_semaphore:
             try:
+                # Mark file as being uploaded
+                self._uploading_files.add(file_key)
+                
                 # Check if file still exists
                 if not file_path.exists():
+                    logger.warning(f"[UPLOAD SKIP] {file_path.name} - File no longer exists")
                     self.metrics.files_failed += 1
                     return False, "File no longer exists", None
                 
@@ -291,7 +334,9 @@ class MediaManager:
                             await api.create_tag_with_category(tag, "meta")
                     
                     # Upload with appropriate initial tags
+                    logger.debug(f"[UPLOAD API] {file_path.name} - Calling upload_post API")
                     result = await api.upload_post(file_path, tags=initial_tags, safety="unsafe")
+                    logger.debug(f"[UPLOAD API] {file_path.name} - API call completed")
                     
                     # Handle MIME type issues for video files
                     if isinstance(result, dict) and "error" in result:
@@ -385,11 +430,15 @@ class MediaManager:
                             return False, f"API Error (HTTP {status_code}): {detailed_error}", None
                     
                     self.metrics.files_uploaded += 1
+                    logger.debug(f"[UPLOAD SUCCESS] {file_path.name} - Upload completed successfully")
                     return True, "Success", result
                     
             except Exception as e:
                 self.metrics.files_failed += 1
                 return False, str(e), None
+            finally:
+                # Always remove file from uploading set when done
+                self._uploading_files.discard(file_key)
 
     async def parallel_upload_batch(self, files: List[Path]) -> List[Tuple[Path, bool, Optional[Dict]]]:
         """Upload multiple files in parallel with optimized performance"""
@@ -407,7 +456,13 @@ class MediaManager:
         
         # Create upload tasks
         tasks = []
+        file_names = []
         for file_path in files:
+            logger.debug(f"[BATCH TASK] Creating upload task for {file_path.name}")
+            # Check for duplicate filenames in the same batch
+            if file_path.name in file_names:
+                logger.error(f"[BATCH ERROR] Duplicate filename in batch: {file_path.name}")
+            file_names.append(file_path.name)
             task = self.upload_single_file_optimized(file_path)
             tasks.append(task)
         
@@ -432,8 +487,8 @@ class MediaManager:
                 processed_results.append((file_path, success, post_data))
                 
                 if success:
-                    # Mark as processed
-                    self._mark_file_processed(file_path)
+                    # Don't mark as processed here - we'll do it before file deletion to prevent race conditions
+                    pass
                 else:
                     failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
         
@@ -743,6 +798,9 @@ class MediaManager:
                     for file_path in duplicate_files:
                         try:
                             if file_path.exists():
+                                # Mark as processed BEFORE deletion to prevent race conditions
+                                if self.config.track_processed_files:
+                                    self._mark_file_processed(file_path)
                                 await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
                                 deleted_count += 1
                         except Exception as e:
@@ -762,8 +820,16 @@ class MediaManager:
                     for file_path in files_to_delete:
                         try:
                             if file_path.exists():
+                                # Mark as processed BEFORE deletion to prevent race conditions
+                                if self.config.track_processed_files:
+                                    logger.debug(f"[DELETE MARK] {file_path.name} - Marking as processed before deletion")
+                                    self._mark_file_processed(file_path)
+                                logger.debug(f"[DELETE FILE] {file_path.name} - Deleting file")
                                 await asyncio.get_event_loop().run_in_executor(None, file_path.unlink)
                                 deleted_count += 1
+                                logger.debug(f"[DELETE SUCCESS] {file_path.name} - File deleted successfully")
+                            else:
+                                logger.debug(f"[DELETE SKIP] {file_path.name} - File no longer exists")
                         except Exception as e:
                             logger.warning(f"Failed to delete uploaded file {file_path}: {e}")
                     print(f"Successfully deleted {deleted_count} uploaded files")

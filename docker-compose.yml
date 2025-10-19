@@ -26,6 +26,9 @@ services:
       # Processed files tracking (optional - comment out if not needed)
       # Note: Create ./processed_files.txt as an empty file first with: touch processed_files.txt
       # - ./processed_files.txt:/app/processed_files.txt
+      # Tag cache for persistent tag tracking (recommended for performance)
+      # Note: Create ./processed_tags.txt as an empty file first with: touch processed_tags.txt
+      - ./processed_tags.txt:/app/processed_tags.txt
     
     # Environment variables (can override config.json)
     environment:
@@ -35,6 +38,9 @@ services:
       - MODE=optimized                    # Mode: optimized, upload, tag, untagged, add-characters
       - SCHEDULE_ENABLED=true             # Enable/disable scheduling: true, false
       - SCHEDULE_TIME=*/30 * * * *        # Cron schedule (every 30 minutes)
+      # Logging configuration
+      - LOG_LEVEL=INFO                    # Log level: DEBUG, INFO, WARNING, ERROR
+      - CONSOLE_LOGGING=true              # Enable console output: true, false
       # Override config values if needed
       # - SZURUBOORU_URL=http://your-szurubooru-instance:8080
       # - USERNAME=your-username

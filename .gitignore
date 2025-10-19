@@ -9,3 +9,4 @@ __pycache__/
 *.pyo
 tag_sync_manager.log
 duplicate_cleanup.log
+config-server.json

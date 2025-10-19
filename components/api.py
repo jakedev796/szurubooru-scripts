@@ -23,6 +23,10 @@ RESET = '\033[0m'
 class SzurubooruAPI:
     """API client for Szurubooru"""
     
+    # Class-level tag cache to avoid recreating existing tags
+    _tag_cache = set()
+    _cache_file = Path("processed_tags.txt")
+    
     def __init__(self, config):
         self.config = config
         self.session = None
@@ -33,6 +37,9 @@ class SzurubooruAPI:
             self.auth = aiohttp.BasicAuth(config.username, config.password)
         else:
             raise ValueError("Either api_token or password must be provided")
+        
+        # Load tag cache on initialization
+        self._load_tag_cache()
         
     async def __aenter__(self):
         headers = {'Accept': 'application/json'}
@@ -53,6 +60,32 @@ class SzurubooruAPI:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
+        # Save tag cache on exit
+        self._save_tag_cache()
+    
+    def _load_tag_cache(self):
+        """Load tag cache from file"""
+        try:
+            if self._cache_file.exists():
+                with open(self._cache_file, 'r', encoding='utf-8') as f:
+                    SzurubooruAPI._tag_cache = {line.strip() for line in f if line.strip()}
+                logger.info(f"Loaded {len(SzurubooruAPI._tag_cache)} tags from cache")
+            else:
+                logger.info("No existing tag cache found, starting fresh")
+                SzurubooruAPI._tag_cache = set()
+        except Exception as e:
+            logger.warning(f"Failed to load tag cache: {e}")
+            SzurubooruAPI._tag_cache = set()
+    
+    def _save_tag_cache(self):
+        """Save tag cache to file"""
+        try:
+            with open(self._cache_file, 'w', encoding='utf-8') as f:
+                for tag in sorted(SzurubooruAPI._tag_cache):
+                    f.write(f"{tag}\n")
+            logger.info(f"Saved {len(SzurubooruAPI._tag_cache)} tags to cache")
+        except Exception as e:
+            logger.warning(f"Failed to save tag cache: {e}")
     
     async def test_connection(self) -> bool:
         """Test connection to Szurubooru with timeout and detailed diagnostics"""
@@ -326,6 +359,11 @@ class SzurubooruAPI:
     
     async def create_tag_with_category(self, tag_name: str, category: str = "default") -> bool:
         """Create a tag with a specific category"""
+        # Check if tag is already in cache
+        cache_key = f"{tag_name}:{category}"
+        if cache_key in SzurubooruAPI._tag_cache:
+            return True
+            
         try:
             data = {
                 "names": [tag_name],
@@ -337,14 +375,34 @@ class SzurubooruAPI:
                 json=data
             ) as response:
                 if response.status == 200:
+                    # Add to cache on successful creation
+                    SzurubooruAPI._tag_cache.add(cache_key)
+                    # Periodically save cache to avoid losing progress
+                    if len(SzurubooruAPI._tag_cache) % 50 == 0:
+                        self._save_tag_cache()
                     return True
                 elif response.status == 409:
-                    # Try to update the existing tag's category
-                    return await self.update_tag_category(tag_name, category)
+                    # Tag already exists - add to cache and return True (no need to update category)
+                    SzurubooruAPI._tag_cache.add(cache_key)
+                    # Periodically save cache to avoid losing progress
+                    if len(SzurubooruAPI._tag_cache) % 50 == 0:
+                        self._save_tag_cache()
+                    logger.debug(f"Tag {tag_name} already exists, added to cache (total: {len(SzurubooruAPI._tag_cache)})")
+                    return True
                 else:
                     error_text = await response.text()
-                    logger.warning(f"Failed to create tag {tag_name} with category {category}: {error_text}")
-                    return False
+                    # Check if it's a TagAlreadyExistsError in the response body
+                    if "TagAlreadyExistsError" in error_text:
+                        # Tag already exists - add to cache and return True
+                        SzurubooruAPI._tag_cache.add(cache_key)
+                        # Periodically save cache to avoid losing progress
+                        if len(SzurubooruAPI._tag_cache) % 50 == 0:
+                            self._save_tag_cache()
+                        logger.debug(f"Tag {tag_name} already exists (detected in response body), added to cache (total: {len(SzurubooruAPI._tag_cache)})")
+                        return True
+                    else:
+                        logger.warning(f"Failed to create tag {tag_name} with category {category}: {error_text}")
+                        return False
                     
         except Exception as e:
             logger.warning(f"Exception creating tag {tag_name} with category {category}: {e}")

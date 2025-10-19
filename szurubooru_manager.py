@@ -30,13 +30,20 @@ from components import (
     MAGIC_AVAILABLE
 )
 
-# Configure logging
+# Configure logging with environment variable support
+import os
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+console_logging = os.getenv('CONSOLE_LOGGING', 'true').lower() == 'true'
+
+# Set up handlers
+handlers = [logging.FileHandler('/app/logs/szurubooru_manager.log')]
+if console_logging:
+    handlers.append(logging.StreamHandler())
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, log_level, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('szurubooru_manager.log')
-    ]
+    handlers=handlers
 )
 logger = logging.getLogger(__name__)
 
