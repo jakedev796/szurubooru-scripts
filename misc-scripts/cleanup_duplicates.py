@@ -23,6 +23,8 @@ from collections import defaultdict
 from typing import Dict, List, Tuple
 
 # Import our existing components
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
 from components import load_config, SzurubooruAPI
 
 # Configure minimal logging
@@ -43,7 +45,7 @@ RESET = '\033[0m'
 
 
 class DuplicateCleaner:
-    """Efficient duplicate cleaner with streaming processing"""
+    """Duplicate cleaner with streaming processing"""
     
     def __init__(self, config):
         self.config = config
@@ -202,7 +204,7 @@ class DuplicateCleaner:
 async def main():
     """Main function"""
     parser = argparse.ArgumentParser(description="Duplicate cleanup for Szurubooru instances")
-    parser.add_argument("--config", "-c", default="config.json", help="Configuration file path")
+    parser.add_argument("--config", "-c", default="../config.json", help="Configuration file path")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without actually doing it")
     parser.add_argument("--auto-confirm", action="store_true", help="Skip confirmation prompt")
     parser.add_argument("--test-limit", type=int, help="Limit scanning to first N posts (for testing)")
